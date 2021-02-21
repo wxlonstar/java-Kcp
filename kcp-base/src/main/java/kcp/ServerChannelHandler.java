@@ -2,15 +2,18 @@ package kcp;
 
 import com.backblaze.erasure.ReedSolomon;
 import com.backblaze.erasure.fec.Fec;
+import com.backblaze.erasure.fecNative.ReedSolomonNative;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.socket.DatagramPacket;
+import io.netty.util.HashedWheelTimer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import threadPool.TimerThreadPool;
 import threadPool.IMessageExecutor;
 import threadPool.IMessageExecutorPool;
+
+import java.util.concurrent.TimeUnit;
 
 /**
  * Created by JinMiao
@@ -27,11 +30,14 @@ public class ServerChannelHandler extends ChannelInboundHandlerAdapter {
 
     private KcpListener kcpListener;
 
-    public ServerChannelHandler(IChannelManager channelManager, ChannelConfig channelConfig, IMessageExecutorPool iMessageExecutorPool, KcpListener kcpListener) {
+    private HashedWheelTimer hashedWheelTimer;
+
+    public ServerChannelHandler(IChannelManager channelManager, ChannelConfig channelConfig, IMessageExecutorPool iMessageExecutorPool, KcpListener kcpListener,HashedWheelTimer hashedWheelTimer) {
         this.channelManager = channelManager;
         this.channelConfig = channelConfig;
         this.iMessageExecutorPool = iMessageExecutorPool;
         this.kcpListener = kcpListener;
+        this.hashedWheelTimer = hashedWheelTimer;
     }
 
     @Override
@@ -69,11 +75,7 @@ public class ServerChannelHandler extends ChannelInboundHandlerAdapter {
         }
         IMessageExecutor iMessageExecutor = iMessageExecutorPool.getIMessageExecutor();
         KcpOutput kcpOutput = new KcpOutPutImp();
-        ReedSolomon reedSolomon = null;
-        if (channelConfig.getFecDataShardCount() != 0 && channelConfig.getFecParityShardCount() != 0) {
-            reedSolomon = ReedSolomon.create(channelConfig.getFecDataShardCount(), channelConfig.getFecParityShardCount());
-        }
-        Ukcp newUkcp = new Ukcp(kcpOutput, kcpListener, iMessageExecutor, reedSolomon, channelConfig, channelManager);
+        Ukcp newUkcp = new Ukcp(kcpOutput, kcpListener, iMessageExecutor, channelConfig.getFecAdapt(), channelConfig, channelManager);
 
         User user = new User(ctx.channel(), msg.sender(), msg.recipient());
         newUkcp.user(user);
@@ -89,15 +91,14 @@ public class ServerChannelHandler extends ChannelInboundHandlerAdapter {
 
         newUkcp.read(byteBuf);
 
-
-        ScheduleTask scheduleTask = new ScheduleTask(iMessageExecutor, newUkcp);
-        TimerThreadPool.scheduleHashedWheel(scheduleTask, newUkcp.getInterval());
+        ScheduleTask scheduleTask = new ScheduleTask(iMessageExecutor, newUkcp,hashedWheelTimer);
+        hashedWheelTimer.newTimeout(scheduleTask,newUkcp.getInterval(), TimeUnit.MILLISECONDS);
     }
 
 
     private int getSn(ByteBuf byteBuf,ChannelConfig channelConfig){
         int headerSize = 0;
-        if(channelConfig.getFecDataShardCount()!=0&&channelConfig.getFecParityShardCount()!=0){
+        if(channelConfig.getFecAdapt()!=null){
             headerSize+= Fec.fecHeaderSizePlus2;
         }
 
